@@ -1,112 +1,176 @@
-(function() {
-    var terminalContainer = document.getElementById('terminal-container'),
-        httpsEnabled = window.location.protocol === "https:",
-        url = (httpsEnabled ? 'wss://' : 'ws://') + window.location.host + window.location.pathname + 'ws',
-        authToken = (typeof tty_auth_token !== 'undefined') ? tty_auth_token : null,
-        protocols = ["tty"],
-        autoReconnect = -1,
-        term, pingTimer, wsError;
+var Zmodem = require('zmodem.js/src/zmodem_browser');
+var Terminal = require('xterm').Terminal;
 
-    var openWs = function() {
-        var ws = new WebSocket(url, protocols);
-        var unloadCallback = function(event) {
-            var message = 'Close terminal? this will also terminate the command.';
-            (event || window.event).returnValue = message;
-            return message;
-        };
+require('xterm/lib/addons/fit');
+require('./overlay');
 
-        ws.onopen = function(event) {
-            console.log("Websocket connection opened");
-            wsError = false;
-            ws.send(JSON.stringify({AuthToken: authToken}));
-            pingTimer = setInterval(sendPing, 30 * 1000, ws);
+var terminalContainer = document.getElementById('terminal-container'),
+    httpsEnabled = window.location.protocol === "https:",
+    url = (httpsEnabled ? 'wss://' : 'ws://') + window.location.host + window.location.pathname + 'ws',
+    authToken = (typeof tty_auth_token !== 'undefined') ? tty_auth_token : null,
+    protocols = ["tty"],
+    autoReconnect = -1,
+    term, pingTimer, wsError;
 
-            if (typeof term !== 'undefined') {
-                term.destroy();
-            }
+var openWs = function() {
+    var ws = new WebSocket(url, protocols),
+        textDecoder = new TextDecoder(),
+        textEncoder = new TextEncoder();
+    var sendMessage = function (message) {
+        ws.send(textEncoder.encode(message));
+    };
+    var unloadCallback = function (event) {
+        var message = 'Close terminal? this will also terminate the command.';
+        (event || window.event).returnValue = message;
+        return message;
+    };
+    var zsentry = new Zmodem.Sentry({
+        to_terminal: function _to_terminal(octets) {
+            var buffer = new Uint8Array(octets).buffer;
+            term.write(textDecoder.decode(buffer));
+        },
 
-            term = new Terminal();
+        sender: function _ws_sender_func(octets) {
+            var array = new Uint8Array(octets.length + 1);
+            array[0] = '0'.charCodeAt(0);
+            array.set(new Uint8Array(octets), 1);
+            ws.send(array.buffer);
+        },
 
-            term.on('resize', function(size) {
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send("2" + JSON.stringify({columns: size.cols, rows: size.rows}));
-                }
-                setTimeout(function() {
-                    term.showOverlay(size.cols + 'x' + size.rows);
-                }, 500);
-            });
+        on_retract: function _on_retract() {
+            console.log('on_retract');
+        },
 
-            term.on("data", function(data) {
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send("0" + data);
-                }
-            });
-
-            term.on('open', function() {
-                // https://stackoverflow.com/a/27923937/1727928
-                window.addEventListener('resize', function() {
-                    clearTimeout(window.resizedFinished);
-                    window.resizedFinished = setTimeout(function () {
-                        term.fit();
-                    }, 250);
-                });
-                window.addEventListener('beforeunload', unloadCallback);
-                term.fit();
-            });
-
-            while (terminalContainer.firstChild) {
-                terminalContainer.removeChild(terminalContainer.firstChild);
-            }
-
-            term.open(terminalContainer, true);
-        };
-
-        ws.onmessage = function(event) {
-            var data = event.data.slice(1);
-            switch(event.data[0]) {
-                case '0':
-                    term.writeUTF8(window.atob(data));
-                    break;
-                case '1': // pong
-                    break;
-                case '2':
-                    document.title = data;
-                    break;
-                case '3':
-                    var preferences = JSON.parse(data);
-                    Object.keys(preferences).forEach(function(key) {
-                        console.log("Setting " + key + ": " +  preferences[key]);
-                        term.setOption(key, preferences[key]);
+        on_detect: function _on_detect(detection) {
+            var zsession = detection.confirm();
+            if (zsession.type === 'send') {
+                console.log('send', zsession);
+                // Zmodem.Browser.send_files(zsession, files);
+            } else {
+                zsession.on('offer', function (xfer) {
+                    var fileBuffer = [];
+                    xfer.on("input", function (payload) {
+                        var offset = xfer.get_offset();
+                        var size = xfer.get_details().size;
+                        var percent = 100 * offset / size;
+                        console.log(offset + '/' + size + ' (' + percent + '%)');
+                        fileBuffer.push(new Uint8Array(payload));
                     });
-                    break;
-                case '4':
-                    autoReconnect = JSON.parse(data);
-                    console.log("Enabling reconnect: " + autoReconnect + " seconds");
-                    break;
+                    xfer.accept().then(function () {
+                        Zmodem.Browser.save_to_disk(
+                            fileBuffer,
+                            xfer.get_details().name
+                        );
+                    });
+                });
+                zsession.on('session_end', function () {
+                    console.log('session_end');
+                });
+                zsession.start();
             }
-        };
+        }
+    });
 
-        ws.onclose = function(event) {
-            console.log("Websocket connection closed with code: " + event.code);
-            if (term) {
-                term.off('data');
-                term.off('resize');
-                if (!wsError) {
-                    term.showOverlay("Connection Closed", null);
-                }
+    ws.binaryType = "arraybuffer";
+
+    ws.onopen = function(event) {
+        console.log("Websocket connection opened");
+        wsError = false;
+        sendMessage(JSON.stringify({AuthToken: authToken}));
+        pingTimer = setInterval(function() {
+            sendMessage("1");
+        }, 30 * 1000);
+
+        if (typeof term !== 'undefined') {
+            term.destroy();
+        }
+
+        term = new Terminal({
+            fontSize: 13,
+            fontFamily: '"Menlo for Powerline", Menlo, Consolas, "Liberation Mono", Courier, monospace'
+        });
+
+        term.on('resize', function(size) {
+            if (ws.readyState === WebSocket.OPEN) {
+                sendMessage("2" + JSON.stringify({columns: size.cols, rows: size.rows}));
             }
-            window.removeEventListener('beforeunload', unloadCallback);
-            clearInterval(pingTimer);
-            // 1000: CLOSE_NORMAL
-            if (event.code !== 1000 && autoReconnect > 0) {
-                setTimeout(openWs, autoReconnect * 1000);
+            setTimeout(function() {
+                term.showOverlay(size.cols + 'x' + size.rows);
+            }, 500);
+        });
+
+        term.on('data', function(data) {
+            if (ws.readyState === WebSocket.OPEN) {
+                sendMessage("0" + data);
             }
-        };
+        });
+
+        while (terminalContainer.firstChild) {
+            terminalContainer.removeChild(terminalContainer.firstChild);
+        }
+
+        term.open(terminalContainer, true);
+
+        // https://stackoverflow.com/a/27923937/1727928
+        window.addEventListener('resize', function() {
+            clearTimeout(window.resizedFinished);
+            window.resizedFinished = setTimeout(function () {
+                term.fit();
+            }, 250);
+        });
+        window.addEventListener('beforeunload', unloadCallback);
+        term.fit();
     };
 
-    var sendPing = function(ws) {
-        ws.send("1");
+    ws.onmessage = function(event) {
+        var cmd = String.fromCharCode(new DataView(event.data).getUint8()),
+            data = event.data.slice(1);
+        switch(cmd) {
+            case '0':
+                zsentry.consume(data);
+                break;
+            case '1': // pong
+                break;
+            case '2':
+                document.title = textDecoder.decode(data);
+                break;
+            case '3':
+                var preferences = JSON.parse(textDecoder.decode(data));
+                Object.keys(preferences).forEach(function(key) {
+                    console.log("Setting " + key + ": " +  preferences[key]);
+                    term.setOption(key, preferences[key]);
+                });
+                break;
+            case '4':
+                autoReconnect = JSON.parse(textDecoder.decode(data));
+                console.log("Enabling reconnect: " + autoReconnect + " seconds");
+                break;
+            default:
+                console.log("Unknown command: " + cmd);
+                break;
+        }
     };
 
+    ws.onclose = function(event) {
+        console.log("Websocket connection closed with code: " + event.code);
+        if (term) {
+            term.off('data');
+            term.off('resize');
+            if (!wsError) {
+                term.showOverlay("Connection Closed", null);
+            }
+        }
+        window.removeEventListener('beforeunload', unloadCallback);
+        clearInterval(pingTimer);
+        // 1000: CLOSE_NORMAL
+        if (event.code !== 1000 && autoReconnect > 0) {
+            setTimeout(openWs, autoReconnect * 1000);
+        }
+    };
+};
+
+if (document.readyState === 'complete' || document.readyState !== 'loading') {
     openWs();
-})();
+} else {
+    document.addEventListener('DOMContentLoaded', openWs);
+}
