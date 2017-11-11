@@ -4,7 +4,9 @@
 (function (overlay) {
     module.exports = overlay(require('xterm').Terminal);
 })(function (Terminal) {
-    Terminal.prototype.showOverlay = function(msg, timeout) {
+    var exports = {};
+
+    exports.showOverlay = function(msg, timeout) {
         if (!this.overlayNode_) {
             if (!this.element)
                 return;
@@ -59,4 +61,8 @@
             }, 200);
         }, timeout || 1500);
     };
+
+    Terminal.prototype.showOverlay = exports.showOverlay;
+
+    return exports;
 });

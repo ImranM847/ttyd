@@ -72,3 +72,42 @@ html, body {
         color: #f0f0f0;
     }
 }
+
+#modal strong {
+    color: #268bd2;
+}
+
+#modal span {
+    color: #2aa198;
+}
+
+#modal header {
+    font-weight: bold;
+    text-align: center;
+    padding-bottom: 20px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid #ddd;
+
+}
+
+#choose .file-name {
+    border-color: transparent;
+}
+
+#progress {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px dashed #ddd;
+}
+
+#progress progress {
+    margin-bottom: 0.5rem;
+}
+
+#progress {
+    color: #93a1a1;
+}
+
+#progress span {
+    font-weight: bold;
+}
